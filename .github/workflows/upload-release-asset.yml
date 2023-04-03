@@ -1,26 +1,20 @@
 on:
   push:
+    # Sequence of patterns matched against refs/tags
+    tags:
+    - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
 
 name: Upload Release Asset
 
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  build_on_ubuntu:
-    runs-on: ubuntu-latest  
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-          architecture: 'x64'
-      - name: Install dependencies for Linux
-          sudo apt-get install -qq -y g++ sox
-      - name: run.sh
-        shell: bash
-        run: |
-          ./run.sh
   build_on_centos:
     runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 40
+      matrix:
+        target: [bin, chainbin, featbin, fgmmbin, fstbin, gmmbin, ivectorbin, kwsbin, latbin, lmbin, nnet2bin, nnet3bin, nnetbin, online2bin, onlinebin, rnnlmbin, sgmm2bin]
+        kaldi: [59299d1cf95b72bb109d583947d9e9ece19aa6dc]
     container:
       image: centos:7
       env:
@@ -34,9 +28,40 @@ jobs:
         with:
           python-version: '3.10'
           architecture: 'x64'
-      - name: Install dependencies for Linux
-          yum install -y devtoolset-7-gcc-c++ devtoolset-7-make sox ncurses-devel libtool automake autoconf git centos-release-scl bzip2 wget which unzip bc patch
+      - name: Install dependencies
+        run: |
+          yum install -y centos-release-scl
+          yum-config-manager --enable rhel-server-rhscl-7-rpms
+          yum install -y devtoolset-7-gcc-c++ devtoolset-7-make devtoolset-7-gcc-gfortran
+          yum install -y sox ncurses-devel libtool automake autoconf git subversion
+          yum install -y bzip2 wget which unzip bc patch python2
+          yum install -y zlib-devel
+          yum install -y sudo
       - name: run.sh
         shell: bash
         run: |
-          ./run.sh
+          PATH="/opt/rh/devtoolset-7/root/usr/bin:${PATH:-}" ./run.sh ${{ matrix.target }} ${{ matrix.kaldi }}
+      - name: Build project # This would actually build your project, using zip for an example artifact
+        run: |
+          rm -rf kaldi/src/${{ matrix.target }}/*.cc kaldi/src/${{ matrix.target }}/*.o
+          tar -zcvf kaldi-${{ matrix.kaldi }}-${{ matrix.target }}-linux-x64-libc2_17.tar.gz kaldi/src/${{ matrix.target }}
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+      - name: Upload Release Asset
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: kaldi-${{ matrix.kaldi }}-${{ matrix.target }}-linux-x64-libc2_17.tar.gz
+          asset_name: kaldi-${{ matrix.kaldi }}-${{ matrix.target }}-linux-x64-libc2_17.tar.gz
+          asset_content_type: application/gzip
